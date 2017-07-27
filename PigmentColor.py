@@ -1,8 +1,10 @@
 from math import floor, exp, pi, log
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import multiprocessing as mp
+import Fluxes
 
 KB = 1.38E-23 #Boltzmann constant in [m2 kg s-2 K-1]
 H = 6.626E-34 #Planck constant in [J s]
@@ -12,114 +14,10 @@ AU = 1.496E11 #1 AU in [m]
 SUN_RAD = 6.957E8 #solar radius [m]
 joule_to_eV_conv = 6.2415091E18 #convert from Joules to eV
 
-def planck_function_frequency_photons(T, nu1, nu2, resolution=1000):
-    """
-    Return the total photon flux in photons/m^2 for a blackbody at temperature
-    T between the frequencies nu1 and nu2. NOTE: nu1>nu2
-
-    Parameters:
-    T - the temperature of the star
-    nu1 - the higher frequency limit
-    nu2 - the lower frequency limit
-    resolution - the number of frequencies per sum 
-
-    Returns:
-    Bv - the total photon flux in the frequency interval [photons m-2]
-    """
-
-    nu1 = floor(nu1)
-    nu2 = floor(nu2)
-
-    if nu2 > nu1:
-        #this violates the requirements of the function, bad job.
-        return 0
-
-    #Reiman sum the Planck function per wavelength interval
-    vs = np.linspace(nu2,nu1,resolution)
-
-    Bv = np.zeros(resolution-1)
-
-    for i in range(0,len(Bv)):
-        width = vs[i+1]-vs[i]
-        Bv[i] = 8.0*pi/C**2*vs[i]**2/(exp(H*vs[i]/(KB*T))-1.0)*width
-    return sum(Bv)
-
-
-def planck_function_frequency(T, nu1, nu2, resolution=1000):
-    """
-    Return the total flux in W/m^2 for a blackbody at temperature T between the
-    frequencies nu1 and nu2. NOTE: nu1>nu2
-
-    Parameters:
-    T - the temperature of the star
-    nu1 - the higher frequency limit
-    nu2 - the lower frequency limit
-    resolution - the number of frequencies per sum 
-
-    Returns:
-    Bv - the total flux in the frequency interval [W m-2]
-    """
-
-    nu1 = floor(nu1)
-    nu2 = floor(nu2)
-
-    if nu2 > nu1:
-        #this violates the requirements of the function, bad job.
-        return 0
-
-    #Reiman sum the Planck function per wavelength interval
-    vs = np.linspace(nu2,nu1,resolution)
-
-    Bv = np.zeros(resolution-1)
-
-    for i in range(0,len(Bv)):
-        width = vs[i+1]-vs[i]
-        Bv[i] = 2.0*H*vs[i]**3.0/C**2/(exp(H*vs[i]/(KB*T))-1.0)*width
-
-    return pi*sum(Bv)
-
-
-
-
-def planck_function_wavelength(T, lambda1, lambda2):
-    """
-    Return the total flux in W/m2 for a blackbody at temperature T between 
-    the wavelengths of lambda1 and lambda2. NOTE: lambda1 < lambda2 
-
-    The returned flux is scaled by pi to account for the flux from a hemisphere
-    of isotropic radiation.
-
-    Parameters:
-    T - the temperature of the body
-    lambda1 - the first wavelength to consider given in nm
-    lambda2 - the final wavelength to consider given in nm
-
-    Returns:
-    Bv - the total flux in the wavelength interval [W m-2]
-    """
-
-    v1 = floor(lambda1)
-    v2 = floor(lambda2)
-    if v2-v1 < 1:
-        return 0
-
-    vs = np.linspace(v1,v2,(v2-v1)+1) 
-    Bv = np.zeros(len(vs))
-
-    c1 = 2.0*H*C**2
-    c2 = H*C/(KB*T)
-    for i in range(0,len(Bv)):
-        wavelength = vs[i]*(1.0E-9) #convert to meters
-        Bv[i] = c1/wavelength**5*1.0/(exp(c2/wavelength)-1.0)*(1.0E-9)
-
-    return pi*sum(Bv) #scale by pi to account for flux over hemisphere
-
-
 
 def calc_u_naught(T_star, T_sur, R_star, R_orbit, nu, nu_width, phi=0.333):
     """
-    Calculate the u0 value from Bjorn (1976). This value is calculated assuming
-    a blackbody approximation here.
+    Calculate the u0 value from Bjorn (1976). 
     """
 
     star_flux = planck_function_frequency_photons(T_star, nu+nu_width, nu-nu_width)*\
@@ -127,19 +25,102 @@ def calc_u_naught(T_star, T_sur, R_star, R_orbit, nu, nu_width, phi=0.333):
     #print("at nu: %0.2f - star flux is: %2.3e"%(nu,star_flux))
     plant_flux = planck_function_frequency_photons(T_sur, nu+nu_width, nu-nu_width)
 
-    bjorn_u0 = KB*T_sur*log(phi*R_star**2/R_orbit**2)+H*nu*(1.0-T_sur/T_star)
+    #bjorn_u0 = KB*T_sur*log(phi*R_star**2/R_orbit**2)+H*nu*(1.0-T_sur/T_star)
     u0 = KB*T_sur*log(phi*star_flux/plant_flux+1.0)
 
     #print("nu: %2.3e - bjorn_u0=%2.3e, u0=%2.3e (error: %f)"%(nu,bjorn_u0,u0,(u0-bjorn_u0)/bjorn_u0))
 
     return u0
 
+def get_plant_flux(T, start, end, resolution=100):
+    """
+    Get the flux emitted by the surface plants in a blackbody approximation.
+
+    Inputs:
+    T - the surface temperature (temperature of the plants) [K]
+    start - the start frequency for the calculations [Hz]
+    end - the end frequency for the calculations [Hz]
+    resolution - the number of intervals between start and end
+
+    Returns:
+    flux - the total flux from the plants [Photons m-2 s-1]
+    """
+
+    freqs = np.linspace(start,end,resolution)
+
+    fluxes = Fluxes.get_blackbody_photon_flux_for_frequencies(T,freqs)
+    flux = Fluxes.total_flux(freqs, fluxes)
+
+    return flux
+
+
+def get_incident_flux(TYPE, start, end, star_rad=1.0, orbital_rad=1.0, T=-1, \
+        resolution=100):
+    """
+    This function will return the flux incident on a planet in the range 
+    start to end. The incident flux can be scaled by the orbital distance of the
+    planet. This must be done in the blackbody approximation (TYPE=0), i.e. a
+    star radius and orbital radius must be specified.
+
+    Input:
+    TYPE - the flux you'd like. The options are:
+        0 - use a blackbody approximation for the flux
+        1 - use the flux from the Sun at Earth's orbital distance at the surface
+        2 - use the flux from the Sun at Earth's orbital distance at the TOA
+    star_rad - the radius of the star [m]
+    orbital_rad - the orbital radius of the planet [m]
+    T - the temperature of the star [K]
+    start - The starting frequency to use [Hz]
+    end - the ending frequency to use [Hz]
+    resolution - the number of steps to use between start and end
+
+    Returns:
+    flux - the total flux between start and end [Photons m-2 s-1] 
+    """
+
+    if end < start:
+        print("Error in get_incident_flux(): end < start.")
+        sys.exit(1)
+
+    flux = 0.0
+    freqs = np.linspace(start,end,resolution)
+
+    if TYPE==0:
+        #this is the blackbody approximation, make sure we have everything
+        #needed to calculate the photon flux
+        if star_rad==1.0 or orbital_rad==1.0 or T<0:
+            print("Error in get_incident_flux(): invalid inputs for TYPE=0.")
+            sys.exit(1)
+
+        #the necessary parameters are provided, continue
+        fluxes = Fluxes.get_blackbody_photon_flux_for_frequencies(T,freqs,\
+                star_rad,orbital_rad)
+        flux = Fluxes.total_flux(freqs, fluxes)
+
+    elif TYPE==1:
+        #get the total flux for the Earth's surface
+        measured_freqs, measured_fluxes = Fluxes.get_earth_surface_flux()
+        calc_fluxes = np.zeros_like(freqs)
+        for i in range(0,len(freqs)):
+            calc_fluxes[i] = Fluxes.flux_at_nearest_freq(freqs[i], \
+                    measured_freqs, measured_fluxes)
+
+    
+    return flux
+
+
+
+
+
+
+
+
 
 
 def simple_pigment_calc(T_star, R_star, R_orbit, PLOT=False):
     """
     Simple calculation of the optimal pigment color following the calculation 
-    by Bjorn (1976). We assume the star emits as a blackbody.
+    by Bjorn (1976). 
 
     Input:
     T_star - the temperature of the star [K]
@@ -196,26 +177,48 @@ def simple_pigment_calc(T_star, R_star, R_orbit, PLOT=False):
 
 def plot_pigments_over_temp(temps, pigs):
 
-    base = np.min(pigs)
-    plt.gca().add_patch(patches.Rectangle((2500, base),1200,0.1, alpha=0.5,\
+    height = 0.06
+    base = np.min(pigs)-height
+
+    plt.gca().add_patch(patches.Rectangle((2500, base),1200,height, alpha=0.5,\
             edgecolor="none", facecolor="red"))
-    plt.gca().add_patch(patches.Rectangle((3700, base),1500,0.1, alpha=0.5,\
+    plt.gca().add_patch(patches.Rectangle((3700, base),1500,height, alpha=0.5,\
             edgecolor="none", facecolor="orange"))
-    plt.gca().add_patch(patches.Rectangle((5200, base),800,0.1, alpha=0.5,\
+    plt.gca().add_patch(patches.Rectangle((5200, base),800,height, alpha=0.5,\
             edgecolor="none", facecolor="yellow"))
-    plt.gca().add_patch(patches.Rectangle((6000, base),1500,0.1, alpha=0.5,\
+    plt.gca().add_patch(patches.Rectangle((6000, base),1500,height, alpha=0.5,\
             edgecolor="none", facecolor="#ffff99"))
 
-    plt.gca().text(3100,base+0.05,"M", verticalalignment="center", horizontalalignment="center")
+    plt.gca().text(3100,base+height/2.0,"M", verticalalignment="center", horizontalalignment="center")
+    plt.gca().text(4450,base+height/2.0,"K", verticalalignment="center", horizontalalignment="center")
+    plt.gca().text(5600,base+height/2.0,"G", verticalalignment="center", horizontalalignment="center")
+    plt.gca().text(6750,base+height/2.0,"F", verticalalignment="center", horizontalalignment="center")
+
+    plt.plot((2550,2550),(base+height,np.max(pigs)), "k:", linewidth=2, label="TRAPPIST-1")
+    plt.plot((3042,3042),(base+height,np.max(pigs)), "k--", linewidth=2, label="Proxima Centauri")
+    plt.plot((5778,5778),(base+height,np.max(pigs)), "k-.", linewidth=2, label="Sun")
+
+    cutoff_pig = 0
+    for i in range(0,len(pigs)):
+        if pigs[i] < 1.0:
+            cutoff_pig = temps[i]
+            break
+
+    plt.gca().add_patch(patches.Rectangle((np.min(temps),base+height),\
+            cutoff_pig-np.min(temps), np.max(pigs)-base-height,alpha=0.5,\
+            edgecolor='none',facecolor="purple"))
 
 
-    plt.plot(temps,pigs)
+    plt.plot(temps,pigs, "k", linewidth=2)
     plt.xlim(np.min(temps),np.max(temps))
-    plt.ylim(np.min(pigs),np.max(pigs))
+    plt.ylim(base,np.max(pigs))
+    plt.xlabel("Stellar Temperature [K]")
+    plt.ylabel(r"Optimal Pigment Absorption [$\mathrm{\mu}$m]")
+    plt.legend()
     plt.show()
 
 def plot_opt_pig_over_temp():
-    num_temps = 20
+    num_temps = 40
     temps = np.linspace(2500, 7500, num_temps)
     opt_pigs = np.zeros(num_temps)
 
